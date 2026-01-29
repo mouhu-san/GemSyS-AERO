@@ -368,8 +368,34 @@ function initAerosSheet(ss) { const s = ss.insertSheet(AIR_CONFIG.SHEETS.AEROS);
 function initDashboard(ss) { const s = ss.insertSheet(AIR_CONFIG.SHEETS.DASH); s.getRange("B5").setValue("Initializing..."); return s; }
 function initAISummarySheet(ss) { const s = ss.insertSheet(AIR_CONFIG.SHEETS.AI_SUMMARY); s.appendRow(['Time', 'AI_Response_Log']); s.setFrozenRows(1); return s; }
 
-function run_Monthly_Archiver() { archiveSheet(AIR_CONFIG.SHEETS.CAMS, `GemSyS_Dump_CAMS`); }
+// Module: System Maintenance (Fixed)
+// ==========================================
+// Module: System Maintenance (Fixed)
+// ==========================================
 
+/**
+ * RunDailyMaintenance
+ * 全シートのデータ保持期限をチェックし、古いデータをCSVに退避・削除する。
+ * また、AIログの行数制限も適用する。
+ */
+function RunDailyMaintenance() {
+    console.log(`[MAINTENANCE] Starting System Maintenance...`);
+
+    // 1. 各DBシートのアーカイブ (32日経過で退避)
+    // CAMS (メイン)
+    archiveSheet(AIR_CONFIG.SHEETS.CAMS, "GemSyS_Dump_CAMS");
+    // AEROS (実測値)
+    archiveSheet(AIR_CONFIG.SHEETS.AEROS, "GemSyS_Dump_AEROS");
+    // Risk_Tracker (統合ログ)
+    archiveSheet(AIR_CONFIG.SHEETS.INTEGRATED, "GemSyS_Dump_RiskTracker");
+
+    // 2. AIログのローテーション (行数制限)
+    maintainAiLogs();
+
+    console.log(`[MAINTENANCE] All tasks completed.`);
+}
+
+// 既存の archiveSheet 関数 (そのまま利用、または無ければ以下を使用)
 function archiveSheet(sheetName, filePrefix) {
     console.log(`[ARCHIVE] Start processing: ${sheetName}`);
     let ss; try { ss = SpreadsheetApp.openById(AIR_CONFIG.SHEET_ID); } catch (e) { console.error(`[ARCHIVE] Failed to open spreadsheet`, e); return; }
@@ -387,32 +413,76 @@ function archiveSheet(sheetName, filePrefix) {
     let rowsToArchive = [];
     let rowsToKeep = [headers];
 
-    data.forEach((row, index) => {
+    data.forEach(row => {
         const cellValue = row[0];
         if (cellValue) {
             let timeVal = 0;
             if (cellValue instanceof Date) {
                 timeVal = cellValue.getTime();
             } else {
-                const strVal = String(cellValue);
-                timeVal = new Date(strVal.replace(/-/g, '/')).getTime();
+                // 日付パースの強化 (YYYY/MM/DD HH:mm 形式などに対応)
+                const strVal = String(cellValue).replace(/-/g, '/');
+                timeVal = new Date(strVal).getTime();
             }
-            if (now - timeVal > retentionMs) rowsToArchive.push(row);
-            else rowsToKeep.push(row);
+
+            // 日付が無効(NaN)でなければ判定
+            if (!isNaN(timeVal) && (now - timeVal > retentionMs)) {
+                rowsToArchive.push(row);
+            } else {
+                rowsToKeep.push(row);
+            }
         }
     });
 
+    // 退避データがある場合のみCSV保存＆シート更新
     if (rowsToArchive.length > 0) {
+        console.log(`[ARCHIVE] Archiving ${rowsToArchive.length} rows from ${sheetName}...`);
+
+        // CSV作成
         let csv = headers.join(",") + "\n";
         rowsToArchive.forEach(r => {
-            csv += r.map(c => { const s = String(c).replace(/"/g, '""'); return `"${s}"`; }).join(",") + "\n";
+            csv += r.map(c => {
+                // CSVエスケープ処理
+                let s = String(c).replace(/"/g, '""');
+                if (s.includes(",") || s.includes("\n")) s = `"${s}"`;
+                return s;
+            }).join(",") + "\n";
         });
 
+        // ドライブに保存
         let folder; try { folder = DriveApp.getFolderById(AIR_CONFIG.DRIVE_FOLDER_ID); } catch (e) { console.error(`[ARCHIVE] Folder access error`, e); return; }
-        const fileName = `${filePrefix}_${Utilities.formatDate(new Date(), "JST", "yyyy_'W'w_dd")}.csv`;
+        const fileName = `${filePrefix}_${Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyyMMdd_HHmm")}.csv`;
         folder.createFile(fileName, csv, MimeType.CSV);
+
+        // シートをクリアして維持分だけ書き戻す
         sheet.clearContents();
-        if (rowsToKeep.length > 0) sheet.getRange(1, 1, rowsToKeep.length, rowsToKeep[0].length).setValues(rowsToKeep);
+        if (rowsToKeep.length > 0) {
+            sheet.getRange(1, 1, rowsToKeep.length, rowsToKeep[0].length).setValues(rowsToKeep);
+        }
+        console.log(`[ARCHIVE] Done. Kept ${rowsToKeep.length - 1} rows.`);
+    } else {
+        console.log(`[ARCHIVE] No old data to archive in ${sheetName}.`);
+    }
+}
+
+// AIログの行数制限を行う関数 (新規追加)
+function maintainAiLogs() {
+    console.log(`[MAINTENANCE] Checking AI Summary Logs...`);
+    const ss = SpreadsheetApp.openById(AIR_CONFIG.SHEET_ID);
+    const sheet = ss.getSheetByName(AIR_CONFIG.SHEETS.AI_SUMMARY);
+    if (!sheet) return;
+
+    const maxRows = AIR_CONFIG.RETENTION.AI_LOG_MAX || 40; // デフォルト40行
+    const lastRow = sheet.getLastRow();
+
+    // ヘッダー(1行) + データ行数 > 上限 ならば削除
+    if (lastRow > maxRows + 1) {
+        const deleteCount = lastRow - (maxRows + 1);
+        console.log(`[MAINTENANCE] Deleting ${deleteCount} old AI logs...`);
+        // 古い行（下の方）を削除したいが、GemSySは新しい順(insertRowBefore)で書いているため
+        // 「行番号が大きい＝古い」となる。
+        // つまり、(maxRows + 2) 行目 から 最後まで を削除すればよい。
+        sheet.deleteRows(maxRows + 2, deleteCount);
     }
 }
 
