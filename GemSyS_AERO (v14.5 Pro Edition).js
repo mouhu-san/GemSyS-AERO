@@ -135,11 +135,11 @@ function main_AirQualityUpdate(mode) {
     }
 
     // Fetch AEROS (Optional)
-    let aerosResult = null;
-    try { 
-        console.log(`[MAIN] Fetching AEROS Data (Optional)...`); 
-        aerosResult = fetchAllAerosData(1000); 
-    } catch(e) { console.warn("AEROS fetch skip", e); }
+    // let aerosResult = null;
+    // try { 
+    //     console.log(`[MAIN] Fetching AEROS Data (Optional)...`); 
+    //     aerosResult = fetchAllAerosData(1000); 
+    // } catch(e) { console.warn("AEROS fetch skip", e); }
 
     sheetDash.getRange(ui.STATUS_MAIN).setValue("📝 Processing...");
 

@@ -1,0 +1,118 @@
+// ==========================================
+// Module: AEROS Daily Batch (v1.0)
+// ==========================================
+
+/**
+ * AEROSの日次バッチ取得処理
+ * トリガー設定: 毎日 午後11時〜午前0時 (23:30頃推奨)
+ * 動作: 登録された観測局の「今日1日分(00:00-23:00)」のデータをまとめて取得し、記録する。
+ */
+function run_Aeros_Daily_Batch() {
+    console.log(`[AEROS-BATCH] Starting Daily Batch Process...`);
+    
+    const ss = SpreadsheetApp.openById(AIR_CONFIG.SHEET_ID);
+    let sheet = ss.getSheetByName(AIR_CONFIG.SHEETS.AEROS);
+    
+    // シートが無ければ初期化（ヘッダー作成）
+    if (!sheet) {
+        sheet = ss.insertSheet(AIR_CONFIG.SHEETS.AEROS);
+        // ヘッダー生成: Time + 各地点の(PM2.5, NO2, SO2)
+        let headers = ['Time'];
+        AIR_CONFIG.STATIONS_DB.forEach(st => {
+            headers.push(`${st.name}_PM2.5`, `${st.name}_NO2`, `${st.name}_SO2`);
+        });
+        sheet.appendRow(headers);
+        sheet.setFrozenRows(1);
+    }
+
+    // 今日の日付情報をセット (JST)
+    const now = new Date();
+    const targetYM = Utilities.formatDate(now, "Asia/Tokyo", "yyyyMM");       // API用 (202601)
+    const targetDateStr = Utilities.formatDate(now, "Asia/Tokyo", "yyyy/MM/dd"); // フィルタ用 (2026/01/29)
+    
+    // データ格納用マップ: timeMap["2026/01/29 10:00"] = [row data...]
+    let timeMap = {};
+    
+    // 00:00〜23:00 の枠を作っておく
+    for (let h = 0; h < 24; h++) {
+        const hourStr = (h < 10 ? "0" + h : h) + ":00";
+        const timeKey = `${targetDateStr} ${hourStr}`;
+        timeMap[timeKey] = {}; // 各観測局のデータを入れる
+    }
+
+    // 各観測局をループして取得
+    AIR_CONFIG.STATIONS_DB.forEach(station => {
+        console.log(`[AEROS-BATCH] Fetching: ${station.name} (${station.id})`);
+        Utilities.sleep(1500); // サーバー負荷軽減のため1.5秒待機
+
+        const url = `${AIR_CONFIG.URLS.AEROS}?Start_YM=${targetYM}&End_YM=${targetYM}&TDFKN_CD=23&SKT_CD=${station.id}&REQUEST_DATA=PM2_5,NO2,SO2`;
+        
+        try {
+            const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+            if (res.getResponseCode() !== 200) {
+                console.warn(`[AEROS-BATCH] Failed to fetch ${station.name}: ${res.getResponseCode()}`);
+                return;
+            }
+
+            const json = JSON.parse(res.getContentText());
+            const dataList = Array.isArray(json) ? json : json.data;
+
+            if (!dataList) return;
+
+            // 取得したリストから「今日の分」だけを抽出してMapに詰める
+            dataList.forEach(record => {
+                // record.MstTime 例: "2026/01/29 14:00"
+                if (record.MstTime && record.MstTime.startsWith(targetDateStr)) {
+                    if (!timeMap[record.MstTime]) timeMap[record.MstTime] = {};
+                    
+                    // 必要な値を抽出
+                    timeMap[record.MstTime][station.id] = {
+                        pm25: record.PM2_5,
+                        no2: record.NO2,
+                        so2: record.SO2
+                    };
+                }
+            });
+
+        } catch (e) {
+            console.error(`[AEROS-BATCH] Error processing ${station.name}`, e);
+        }
+    });
+
+    // シートへの書き込みデータの作成
+    // 行: 時間, [局A_PM, 局A_NO, 局A_SO], [局B_PM...] ...
+    let rowsToAdd = [];
+    const timeKeys = Object.keys(timeMap).sort(); // 時間順にソート
+
+    timeKeys.forEach(timeStr => {
+        let row = [timeStr];
+        let hasData = false;
+
+        AIR_CONFIG.STATIONS_DB.forEach(st => {
+            const stData = timeMap[timeStr][st.id];
+            if (stData) {
+                row.push(stData.pm25 || "-", stData.no2 || "-", stData.so2 || "-");
+                hasData = true; // データが1つでもあれば書き込むフラグ
+            } else {
+                row.push("-", "-", "-");
+            }
+        });
+
+        // 空行でなければ追加リストへ
+        if (hasData) {
+            rowsToAdd.push(row);
+        }
+    });
+
+    if (rowsToAdd.length > 0) {
+        // 重複防止: 既に同じ時間のデータがあるかチェックするのはコストが高いので
+        // シンプルに「追記」する運用か、あるいは「最新の24行を確認」しても良いが、
+        // ここでは単純な追記（append）とする。
+        // ※必要であれば clearContents して書き直すロジックに変更可
+        
+        sheet.getRange(sheet.getLastRow() + 1, 1, rowsToAdd.length, rowsToAdd[0].length).setValues(rowsToAdd);
+        console.log(`[AEROS-BATCH] Saved ${rowsToAdd.length} rows.`);
+    } else {
+        console.log(`[AEROS-BATCH] No data found for today.`);
+    }
+}
