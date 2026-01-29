@@ -226,7 +226,7 @@ function fetchAllCamsData_Parallel() {
         if (resAir.getResponseCode() === 200) {
             const j = JSON.parse(resAir.getContentText());
             if (j.hourly) {
-                const nowStr = Utilities.formatDate(new Date(), "JST", "yyyy-MM-dd'T'HH:00");
+                const nowStr = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd'T'HH:00");
                 let idx = j.hourly.time.findIndex(t => t.startsWith(nowStr));
                 if (idx === -1) idx = 0; 
                 Object.keys(j.hourly).forEach(k => { if (Array.isArray(j.hourly[k])) mergedData[k] = j.hourly[k][idx]; });
