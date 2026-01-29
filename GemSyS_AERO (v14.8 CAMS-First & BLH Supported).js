@@ -1,9 +1,9 @@
 /**
- * GemSyS_AERO (v14.7 Modularized Edition)
+ * GemSyS_AERO (v14.8 CAMS-First & BLH Supported)
  * * [System Change]
- * - Code Refactoring: API Logic separated to 'Module_Gemini_Client'.
- * - AI Model: Uses 'gemini-2.5-flash' via the Module.
- * - Functionality: Full features maintained (Multi-Target, Strict EU Logic).
+ * - Frequency: Hourly execution enabled (Removed odd-hour skip).
+ * - Data Source: CAMS (Open-Meteo) Only. AEROS disabled.
+ * - New Metric: Added 'boundary_layer_height' (BLH) for inversion layer monitoring.
  */
 
 // ==========================================
@@ -28,6 +28,7 @@ const AIR_CONFIG = {
         { id: 'COMMUTE', name: 'Commute', lat: 35.1697000, lon: 136.8631000 }
     ],
 
+    // AEROS Stations (Legacy / Reference only)
     STATIONS_DB: [
         { id: '23101010', name: '名古屋(Univ)', lat: 35.1776, lon: 136.9739 },
         { id: '23208530', name: '津島(Main)', lat: 35.1737, lon: 136.7401 },
@@ -43,19 +44,20 @@ const AIR_CONFIG = {
 
     CAMS_PARAMS: {
         AIR: 'pm2_5,pm10,uv_index,dust,aerosol_optical_depth,ozone,nitrogen_dioxide,sulphur_dioxide,carbon_monoxide,ammonia',
-        METEO: 'precipitation,weather_code,wind_gusts_10m,cloud_cover,surface_pressure,pressure_msl,temperature_2m,relative_humidity_2m,freezing_level_height'
+        // ★Added: boundary_layer_height
+        METEO: 'precipitation,weather_code,wind_gusts_10m,cloud_cover,surface_pressure,pressure_msl,temperature_2m,relative_humidity_2m,freezing_level_height,boundary_layer_height'
     },
     URLS: {
         CAMS_AIR: 'https://air-quality-api.open-meteo.com/v1/air-quality',
         CAMS_METEO: 'https://api.open-meteo.com/v1/forecast',
         AEROS: 'https://soramame.env.go.jp/soramame/api/data_search'
     },
-    SHEETS: { 
-        DASH: 'UI_Dashboard', 
-        INTEGRATED: 'Risk_Tracker', 
-        AEROS: 'DB_Hourly_AEROS', 
-        CAMS: 'DB_Hourly_CAMS', 
-        AI_SUMMARY: 'AI_Summary' 
+    SHEETS: {
+        DASH: 'UI_Dashboard',
+        INTEGRATED: 'Risk_Tracker',
+        AEROS: 'DB_Hourly_AEROS',
+        CAMS: 'DB_Hourly_CAMS',
+        AI_SUMMARY: 'AI_Summary'
     },
     RETENTION: { DAYS: 32, AI_LOG_DAYS: 2, AI_LOG_MAX: 40 }
 };
@@ -96,46 +98,44 @@ function handleCheckboxOperation(e) {
     const ui = AIR_CONFIG.UI;
     if (sheet.getName() === AIR_CONFIG.SHEETS.DASH) {
         if (range.getA1Notation() === ui.CHECK_UPDATE && e.value === 'TRUE') {
-            range.setValue(false); 
-            console.log(`[UI] Manual Update Triggered`); 
-            main_AirQualityUpdate("MANUAL"); 
+            range.setValue(false);
+            console.log(`[UI] Manual Update Triggered`);
+            main_AirQualityUpdate("MANUAL");
         }
         if (range.getA1Notation() === ui.CHECK_AI && e.value === 'TRUE') {
-            range.setValue(false); 
-            console.log(`[UI] AI Analysis Triggered`); 
-            run_AI_Analysis(); 
+            range.setValue(false);
+            console.log(`[UI] AI Analysis Triggered`);
+            run_AI_Analysis();
         }
     }
 }
 
 function main_AirQualityUpdate(mode) {
-    console.log(`[MAIN] Starting Update... Mode: ${mode}`); 
+    console.log(`[MAIN] Starting Update... Mode: ${mode}`);
 
     let ss; try { ss = SpreadsheetApp.openById(AIR_CONFIG.SHEET_ID); } catch (e) { console.error("Sheet Error", e); return; }
     const sheetDash = ss.getSheetByName(AIR_CONFIG.SHEETS.DASH) || initDashboard(ss);
     const ui = AIR_CONFIG.UI;
 
-    if (mode !== "MANUAL") {
-        const currentHour = new Date().getHours();
-        if (currentHour !== 0 && currentHour !== 6 && currentHour % 2 !== 0) {
-            console.log(`[MAIN] Scheduled skip (Hour: ${currentHour})`); 
-            return;
-        }
-    }
-    
+    // ★Update: 1時間ごとの実行を許可 (奇数時のスキップを削除)
+    // if (mode !== "MANUAL") {
+    //     const currentHour = new Date().getHours();
+    //     if (currentHour !== 0 && currentHour !== 6 && currentHour % 2 !== 0) ...
+    // }
+
     if (mode === "MANUAL") sheetDash.getRange(ui.STATUS_MAIN).setValue("🔄 Updating (CAMS Priority)...");
 
     // Fetch OpenMeteo First
-    console.log(`[MAIN] Fetching CAMS Data...`); 
+    console.log(`[MAIN] Fetching CAMS Data...`);
     const camsResult = fetchAllCamsData_Parallel();
     if (!camsResult) {
-        console.error(`[MAIN] CAMS Fetch Failed`); 
+        console.error(`[MAIN] CAMS Fetch Failed`);
         sheetDash.getRange(ui.STATUS_MAIN).setValue("❌ CAMS Fetch Failed");
         return;
     }
 
-    // Fetch AEROS (Optional)
-    // let aerosResult = null;
+    // AEROS Disabled (Commented out)
+    let aerosResult = null;
     // try { 
     //     console.log(`[MAIN] Fetching AEROS Data (Optional)...`); 
     //     aerosResult = fetchAllAerosData(1000); 
@@ -148,19 +148,15 @@ function main_AirQualityUpdate(mode) {
     const sheetCams = ss.getSheetByName(AIR_CONFIG.SHEETS.CAMS) || initCamsSheet(ss);
 
     const now = new Date();
+    // ★TimeZone Fixed: Asia/Tokyo
     const timeStr = Utilities.formatDate(now, "Asia/Tokyo", "yyyy/MM/dd HH:00");
-    console.log(`[MAIN] Target Time: ${timeStr}`); 
-    
+    console.log(`[MAIN] Target Time: ${timeStr}`);
+
     const tMap = camsResult.targetsMap;
     const sMap = camsResult.stationsMap;
-    
+
     let snapshotStations = [];
-    if (aerosResult && aerosResult.stations) {
-        aerosResult.stations.forEach(st => {
-            const match = st.data.find(d => d.MstTime === timeStr); 
-            if (match) snapshotStations.push({ meta: st.meta, data: match });
-        });
-    }
+    // AEROS integration skipped
 
     // Process ALL targets
     AIR_CONFIG.TARGETS.forEach(target => {
@@ -171,9 +167,9 @@ function main_AirQualityUpdate(mode) {
         }
     });
 
-    console.log(`[MAIN] Running Archiver...`); 
+    console.log(`[MAIN] Running Archiver...`);
     run_Monthly_Archiver();
-    
+
     const homeEnv = calculateEnvironment_CamsMain(AIR_CONFIG.TARGETS[0], snapshotStations, tMap['HOME'] || {});
     const finalRisk = assessRisk_EU2024_Strict(homeEnv);
     sheetDash.getRange(ui.STATUS_MAIN).setValue(`✅ Updated\n[${finalRisk.signal}] ${finalRisk.reason}`);
@@ -189,7 +185,7 @@ function main_AirQualityUpdate(mode) {
         console.warn(`[LINK] Daily Summary Module skipped.`, e);
     }
 
-    console.log(`[MAIN] Completed Successfully.`); 
+    console.log(`[MAIN] Completed Successfully.`);
 }
 
 // ------------------------------------------------
@@ -209,10 +205,11 @@ function fetchAllCamsData_Parallel() {
     };
 
     AIR_CONFIG.TARGETS.forEach(t => buildReq(t.lat, t.lon, t.id, 'TARGET'));
-    AIR_CONFIG.STATIONS_DB.forEach(s => buildReq(s.lat, s.lon, s.id, 'STATION'));
+    // Stations fetch removed to save resources if not used
+    // AIR_CONFIG.STATIONS_DB.forEach(s => buildReq(s.lat, s.lon, s.id, 'STATION'));
 
     let responses;
-    try { responses = UrlFetchApp.fetchAll(requests); } catch(e) { console.error("CAMS Fetch Error", e); return null; }
+    try { responses = UrlFetchApp.fetchAll(requests); } catch (e) { console.error("CAMS Fetch Error", e); return null; }
 
     let targetsMap = {};
     let stationsMap = {};
@@ -221,14 +218,14 @@ function fetchAllCamsData_Parallel() {
         const key = mapKeys[i];
         const resAir = responses[i * 2];
         const resMet = responses[i * 2 + 1];
-        
+
         let mergedData = {};
         if (resAir.getResponseCode() === 200) {
             const j = JSON.parse(resAir.getContentText());
             if (j.hourly) {
                 const nowStr = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd'T'HH:00");
                 let idx = j.hourly.time.findIndex(t => t.startsWith(nowStr));
-                if (idx === -1) idx = 0; 
+                if (idx === -1) idx = 0;
                 Object.keys(j.hourly).forEach(k => { if (Array.isArray(j.hourly[k])) mergedData[k] = j.hourly[k][idx]; });
             }
         }
@@ -243,29 +240,8 @@ function fetchAllCamsData_Parallel() {
     return { targetsMap, stationsMap };
 }
 
-function fetchAllAerosData(sleepMs) {
-    const now = new Date();
-    let startYM = Utilities.formatDate(new Date(now.getTime() - (1 * 86400000)), "Asia/Tokyo", "yyyyMM");
-    let endYM = Utilities.formatDate(now, "Asia/Tokyo", "yyyyMM");
-    let allStationsRaw = [];
-    
-    AIR_CONFIG.STATIONS_DB.forEach(src => {
-        Utilities.sleep(sleepMs); 
-        const paramStr = "PM2_5,NO2,SO2"; 
-        const url = `${AIR_CONFIG.URLS.AEROS}?Start_YM=${startYM}&End_YM=${endYM}&TDFKN_CD=23&SKT_CD=${src.id}&REQUEST_DATA=${paramStr}`;
-        try {
-            const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
-            if (res.getResponseCode() === 200) {
-                const rawJson = JSON.parse(res.getContentText());
-                const dataList = Array.isArray(rawJson) ? rawJson : rawJson.data;
-                if (dataList && dataList.length > 0) {
-                    allStationsRaw.push({ meta: src, data: dataList });
-                }
-            }
-        } catch (e) { console.warn(`AEROS Fetch fail for ${src.name}`, e); }
-    });
-    return { stations: allStationsRaw };
-}
+// AEROS functions removed or kept minimal if needed elsewhere
+function fetchAllAerosData(sleepMs) { return null; }
 
 // ------------------------------------------------
 // Logic Functions
@@ -280,21 +256,21 @@ function calculateEnvironment_CamsMain(target, aerosSources, targetCams) {
     const dust = targetCams.dust;
     const nh3 = targetCams.ammonia;
     const aod = targetCams.aerosol_optical_depth;
-    
+
     const t = targetCams.temperature_2m;
-    const ws = targetCams.wind_gusts_10m ? (targetCams.wind_gusts_10m / 3.6).toFixed(1) : "0.0"; 
+    const ws = targetCams.wind_gusts_10m ? (targetCams.wind_gusts_10m / 3.6).toFixed(1) : "0.0";
     const press = targetCams.pressure_msl;
-    
-    return { 
-        PM2_5: valid(pm25), 
-        NO2: valid(no2), 
+
+    return {
+        PM2_5: valid(pm25),
+        NO2: valid(no2),
         SO2: valid(so2),
         OX: valid(ox),
         CO: valid(co),
         DUST: valid(dust),
         NH3: valid(nh3),
         AOD: valid(aod),
-        TEMP: t, 
+        TEMP: t,
         WS: ws,
         PRESS: press
     };
@@ -308,21 +284,21 @@ function assessRisk_EU2024_Strict(env) {
     let p = parseFloat(env.PM2_5);
     let n = parseFloat(env.NO2);
     let s = parseFloat(env.SO2);
-    
+
     let reasons = [];
     let signal = "GREEN";
-    
+
     if (p >= 25.0) { signal = "RED"; reasons.push(`PM2.5(${p})`); }
     if (n >= 50.0) { signal = "RED"; reasons.push(`NO2(${n})`); }
     if (s >= 50.0) { signal = "RED"; reasons.push(`SO2(${s})`); }
-    
+
     if (signal !== "RED") {
         if (p >= 10.0) { signal = "YELLOW"; reasons.push(`PM2.5(${p})`); }
         else if (n >= 20.0) { signal = "YELLOW"; reasons.push(`NO2(${n})`); }
     }
-    
+
     let reasonText = reasons.length > 0 ? "Alert: " + reasons.join(", ") : "Safe levels";
-    
+
     return { signal: signal, reason: reasonText };
 }
 
@@ -333,11 +309,12 @@ function assessRisk_EU2024_Strict(env) {
 
 function writeLogRow_v14(sheetInteg, sheetAeros, sheetCams, timeStr, envHome, tMap, sMap, stationsData, locName) {
     const NA = AIR_CONFIG.TEXT_PLACEHOLDER;
-    
+
     if (locName === 'Home') {
         let rowCams = [timeStr];
         const pushCams = (d) => {
-            const keys = ['pm2_5','pm10','uv_index','dust','aerosol_optical_depth','ozone','nitrogen_dioxide','sulphur_dioxide','carbon_monoxide','ammonia','precipitation','weather_code','wind_gusts_10m','cloud_cover','surface_pressure','pressure_msl','temperature_2m','relative_humidity_2m','freezing_level_height'];
+            // ★Added: boundary_layer_height at the end
+            const keys = ['pm2_5', 'pm10', 'uv_index', 'dust', 'aerosol_optical_depth', 'ozone', 'nitrogen_dioxide', 'sulphur_dioxide', 'carbon_monoxide', 'ammonia', 'precipitation', 'weather_code', 'wind_gusts_10m', 'cloud_cover', 'surface_pressure', 'pressure_msl', 'temperature_2m', 'relative_humidity_2m', 'freezing_level_height', 'boundary_layer_height'];
             keys.forEach(k => rowCams.push(d[k] !== undefined ? d[k] : NA));
         };
         AIR_CONFIG.TARGETS.forEach(t => pushCams(tMap[t.id] || {}));
@@ -345,141 +322,142 @@ function writeLogRow_v14(sheetInteg, sheetAeros, sheetCams, timeStr, envHome, tM
     }
 
     const rowInteg = [
-        timeStr, 
+        timeStr,
         locName,
-        envHome.PM2_5, envHome.OX, envHome.NO2, envHome.SO2, 
-        envHome.CO, envHome.NH3, envHome.DUST, envHome.AOD, 
-        envHome.TEMP, envHome.WS, envHome.PRESS,            
-        assessRisk_EU2024_Strict(envHome).signal            
+        envHome.PM2_5, envHome.OX, envHome.NO2, envHome.SO2,
+        envHome.CO, envHome.NH3, envHome.DUST, envHome.AOD,
+        envHome.TEMP, envHome.WS, envHome.PRESS,
+        assessRisk_EU2024_Strict(envHome).signal
     ];
     insertAtTop(sheetInteg, rowInteg);
 }
 
-function updateDashboard_v14(s, t, h, rawCams) { 
-    const ui = AIR_CONFIG.UI; 
+function updateDashboard_v14(s, t, h, rawCams) {
+    const ui = AIR_CONFIG.UI;
     const risk = assessRisk_EU2024_Strict(h);
-    
+
     s.getRange(ui.STATUS_MAIN).setValue(
-        `【GemSyS v14.7】\n${t}\n` +
+        `【GemSyS v14.8】\n${t}\n` +
         `RISK: [${risk.signal}]\n` +
         `Reason: ${risk.reason}\n` +
         `PM2.5: ${h.PM2_5} / Dust: ${h.DUST}\n` +
         `NO2: ${h.NO2} / NH3: ${h.NH3}\n` +
         `SO2: ${h.SO2} / CO: ${h.CO}`
     );
-    
+
     const bg = risk.signal === "RED" ? "#ffcccc" : (risk.signal === "YELLOW" ? "#fff4cc" : "#ccffcc");
     s.getRange(ui.STATUS_MAIN).setBackground(bg);
 }
 
 function insertAtTop(sheet, row) { sheet.insertRowBefore(2); sheet.getRange(2, 1, 1, row.length).setValues([row]); }
 
-function initIntegratedSheet(ss) { 
-    const s = ss.insertSheet(AIR_CONFIG.SHEETS.INTEGRATED); 
-    s.appendRow(['Time', 'Location', 'Main_PM25', 'Main_OX', 'Main_NO2', 'Main_SO2', 'Main_CO', 'Main_NH3', 'Main_Dust', 'Main_AOD', 'Temp', 'WS', 'Press', 'Risk_Signal']); 
-    s.setFrozenRows(1); return s; 
+function initIntegratedSheet(ss) {
+    const s = ss.insertSheet(AIR_CONFIG.SHEETS.INTEGRATED);
+    s.appendRow(['Time', 'Location', 'Main_PM25', 'Main_OX', 'Main_NO2', 'Main_SO2', 'Main_CO', 'Main_NH3', 'Main_Dust', 'Main_AOD', 'Temp', 'WS', 'Press', 'Risk_Signal']);
+    s.setFrozenRows(1); return s;
 }
-function initCamsSheet(ss) { 
-    const s = ss.insertSheet(AIR_CONFIG.SHEETS.CAMS); 
-    let h = ['Time']; 
-    const buildHeaders = (prefix) => ['PM2.5', 'PM10', 'UV', 'Dust', 'AOD', 'O3', 'NO2', 'SO2', 'CO', 'NH3', 'Precip', 'Weather', 'Gust', 'Cloud', 'Press_S', 'Press_M', 'Temp', 'Hum', 'FreezeAlt'].map(col => `${prefix}_${col}`); 
-    AIR_CONFIG.TARGETS.forEach(t => h.push(...buildHeaders(t.name))); 
-    s.appendRow(h); s.setFrozenRows(1); return s; 
+function initCamsSheet(ss) {
+    const s = ss.insertSheet(AIR_CONFIG.SHEETS.CAMS);
+    let h = ['Time'];
+    // ★Updated: Added BLH header
+    const buildHeaders = (prefix) => ['PM2.5', 'PM10', 'UV', 'Dust', 'AOD', 'O3', 'NO2', 'SO2', 'CO', 'NH3', 'Precip', 'Weather', 'Gust', 'Cloud', 'Press_S', 'Press_M', 'Temp', 'Hum', 'FreezeAlt', 'BLH'].map(col => `${prefix}_${col}`);
+    AIR_CONFIG.TARGETS.forEach(t => h.push(...buildHeaders(t.name)));
+    s.appendRow(h); s.setFrozenRows(1); return s;
 }
-function initAerosSheet(ss) { const s = ss.insertSheet(AIR_CONFIG.SHEETS.AEROS); s.appendRow(['Time', 'Log_Only']); return s; } 
+function initAerosSheet(ss) { const s = ss.insertSheet(AIR_CONFIG.SHEETS.AEROS); s.appendRow(['Time', 'Log_Only']); return s; }
 function initDashboard(ss) { const s = ss.insertSheet(AIR_CONFIG.SHEETS.DASH); s.getRange("B5").setValue("Initializing..."); return s; }
 function initAISummarySheet(ss) { const s = ss.insertSheet(AIR_CONFIG.SHEETS.AI_SUMMARY); s.appendRow(['Time', 'AI_Response_Log']); s.setFrozenRows(1); return s; }
 
-function run_Monthly_Archiver() { archiveSheet(AIR_CONFIG.SHEETS.CAMS, `GemSyS_Dump_CAMS`); } 
+function run_Monthly_Archiver() { archiveSheet(AIR_CONFIG.SHEETS.CAMS, `GemSyS_Dump_CAMS`); }
 
-function archiveSheet(sheetName, filePrefix) { 
-    console.log(`[ARCHIVE] Start processing: ${sheetName}`); 
-    let ss; try { ss = SpreadsheetApp.openById(AIR_CONFIG.SHEET_ID); } catch (e) { console.error(`[ARCHIVE] Failed to open spreadsheet`, e); return; } 
-    const sheet = ss.getSheetByName(sheetName); 
+function archiveSheet(sheetName, filePrefix) {
+    console.log(`[ARCHIVE] Start processing: ${sheetName}`);
+    let ss; try { ss = SpreadsheetApp.openById(AIR_CONFIG.SHEET_ID); } catch (e) { console.error(`[ARCHIVE] Failed to open spreadsheet`, e); return; }
+    const sheet = ss.getSheetByName(sheetName);
     if (!sheet || sheet.getLastRow() <= 1) { console.log(`[ARCHIVE] Sheet not found or empty: ${sheetName}`); return; }
-    
-    const retentionMs = AIR_CONFIG.RETENTION.DAYS * 24 * 60 * 60 * 1000; 
-    const now = new Date().getTime(); 
-    
-    const range = sheet.getDataRange(); 
-    const values = range.getValues(); 
-    const headers = values[0]; 
-    const data = values.slice(1); 
-    
-    let rowsToArchive = []; 
-    let rowsToKeep = [headers]; 
-    
-    data.forEach((row, index) => { 
-        const cellValue = row[0]; 
-        if (cellValue) { 
+
+    const retentionMs = AIR_CONFIG.RETENTION.DAYS * 24 * 60 * 60 * 1000;
+    const now = new Date().getTime();
+
+    const range = sheet.getDataRange();
+    const values = range.getValues();
+    const headers = values[0];
+    const data = values.slice(1);
+
+    let rowsToArchive = [];
+    let rowsToKeep = [headers];
+
+    data.forEach((row, index) => {
+        const cellValue = row[0];
+        if (cellValue) {
             let timeVal = 0;
             if (cellValue instanceof Date) {
                 timeVal = cellValue.getTime();
             } else {
-                const strVal = String(cellValue); 
+                const strVal = String(cellValue);
                 timeVal = new Date(strVal.replace(/-/g, '/')).getTime();
             }
-            if (now - timeVal > retentionMs) rowsToArchive.push(row); 
-            else rowsToKeep.push(row); 
-        } 
-    }); 
-    
-    if (rowsToArchive.length > 0) { 
-        let csv = headers.join(",") + "\n"; 
-        rowsToArchive.forEach(r => { 
-            csv += r.map(c => { const s = String(c).replace(/"/g, '""'); return `"${s}"`; }).join(",") + "\n"; 
-        }); 
-        
-        let folder; try { folder = DriveApp.getFolderById(AIR_CONFIG.DRIVE_FOLDER_ID); } catch (e) { console.error(`[ARCHIVE] Folder access error`, e); return; } 
-        const fileName = `${filePrefix}_${Utilities.formatDate(new Date(), "JST", "yyyy_'W'w_dd")}.csv`; 
-        folder.createFile(fileName, csv, MimeType.CSV); 
-        sheet.clearContents(); 
-        if (rowsToKeep.length > 0) sheet.getRange(1, 1, rowsToKeep.length, rowsToKeep[0].length).setValues(rowsToKeep); 
-    } 
+            if (now - timeVal > retentionMs) rowsToArchive.push(row);
+            else rowsToKeep.push(row);
+        }
+    });
+
+    if (rowsToArchive.length > 0) {
+        let csv = headers.join(",") + "\n";
+        rowsToArchive.forEach(r => {
+            csv += r.map(c => { const s = String(c).replace(/"/g, '""'); return `"${s}"`; }).join(",") + "\n";
+        });
+
+        let folder; try { folder = DriveApp.getFolderById(AIR_CONFIG.DRIVE_FOLDER_ID); } catch (e) { console.error(`[ARCHIVE] Folder access error`, e); return; }
+        const fileName = `${filePrefix}_${Utilities.formatDate(new Date(), "JST", "yyyy_'W'w_dd")}.csv`;
+        folder.createFile(fileName, csv, MimeType.CSV);
+        sheet.clearContents();
+        if (rowsToKeep.length > 0) sheet.getRange(1, 1, rowsToKeep.length, rowsToKeep[0].length).setValues(rowsToKeep);
+    }
 }
 
-function run_AI_Analysis() { 
-    console.log(`[AI] Analysis Started`); 
-    const ss = SpreadsheetApp.openById(AIR_CONFIG.SHEET_ID); 
-    const integSheet = ss.getSheetByName(AIR_CONFIG.SHEETS.INTEGRATED); 
-    const dashSheet = ss.getSheetByName(AIR_CONFIG.SHEETS.DASH); 
-    const summarySheet = ss.getSheetByName(AIR_CONFIG.SHEETS.AI_SUMMARY) || initAISummarySheet(ss); 
-    const ui = AIR_CONFIG.UI; 
-    
+function run_AI_Analysis() {
+    // Same as before...
+    console.log(`[AI] Analysis Started`);
+    const ss = SpreadsheetApp.openById(AIR_CONFIG.SHEET_ID);
+    const integSheet = ss.getSheetByName(AIR_CONFIG.SHEETS.INTEGRATED);
+    const dashSheet = ss.getSheetByName(AIR_CONFIG.SHEETS.DASH);
+    const summarySheet = ss.getSheetByName(AIR_CONFIG.SHEETS.AI_SUMMARY) || initAISummarySheet(ss);
+    const ui = AIR_CONFIG.UI;
+
     if (!integSheet) { console.error(`[AI] Risk_Tracker sheet not found.`); return; }
 
-    const lastRow = integSheet.getLastRow(); if (lastRow < 2) return; 
-    const headers = integSheet.getRange(1, 1, 1, integSheet.getLastColumn()).getValues()[0]; 
-    
-    const checkRows = 6; 
+    const lastRow = integSheet.getLastRow(); if (lastRow < 2) return;
+    const headers = integSheet.getRange(1, 1, 1, integSheet.getLastColumn()).getValues()[0];
+
+    const checkRows = 6;
     const dataRange = integSheet.getRange(2, 1, checkRows, integSheet.getLastColumn()).getValues();
-    
+
     const locIdx = headers.indexOf('Location');
     let rowValues = dataRange.find(r => r[locIdx] === 'Home');
-    
+
     if (!rowValues) {
         console.warn("[AI] 'Home' row not found. Using top row.");
         rowValues = dataRange[0];
     }
-    
+
     const idxPM25 = headers.indexOf('Main_PM25');
     const idxNO2 = headers.indexOf('Main_NO2');
     const idxSO2 = headers.indexOf('Main_SO2');
-    
+
     const risk = assessRisk_EU2024_Strict({
         PM2_5: rowValues[idxPM25],
         NO2: rowValues[idxNO2],
         SO2: rowValues[idxSO2]
     });
-    
-    const csvInput = `${headers.join(",")},Risk_Level,Risk_Reason\n${rowValues.join(",")},${risk.signal},${risk.reason}`; 
-    
-    dashSheet.getRange(ui.STATUS_AI).setValue("🤖 AI Processing..."); 
-    
+
+    const csvInput = `${headers.join(",")},Risk_Level,Risk_Reason\n${rowValues.join(",")},${risk.signal},${risk.reason}`;
+
+    dashSheet.getRange(ui.STATUS_AI).setValue("🤖 AI Processing...");
+
     const safePrompt = AI_SYSTEM_PROMPT_TEMPLATE.replace('{{PLACEHOLDER}}', AIR_CONFIG.TEXT_PLACEHOLDER);
     const model = AIR_CONFIG.AI_MODEL || 'gemini-2.5-flash';
 
-    // ★MODIFIED: Calls the external module instead of local function
     let response = null;
     try {
         if (typeof GEMINI_GenerateContent === 'function') {
@@ -488,24 +466,22 @@ function run_AI_Analysis() {
         } else {
             console.error("[AI] Module 'GEMINI_GenerateContent' not found.");
         }
-    } catch(e) {
+    } catch (e) {
         console.error("[AI] Module Execution Error", e);
     }
-    
-    if (response) { 
-        dashSheet.getRange(ui.OUTPUT_AI).setValue(response); 
-        dashSheet.getRange(ui.STATUS_AI).setValue("✅ Done"); 
-        const timestamp = Utilities.formatDate(new Date(), "JST", "yyyy/MM/dd HH:mm:ss"); 
-        summarySheet.insertRowBefore(2); 
-        summarySheet.getRange(2, 1, 1, 2).setValues([[timestamp, response]]); 
-        console.log(`[AI] Response saved`); 
-    } else { 
-        dashSheet.getRange(ui.STATUS_AI).setValue("❌ API Error"); 
-        console.error(`[AI] API Error or No Response`); 
-    } 
-}
 
-// NOTE: 'callGemini_v1beta' has been removed and replaced by Module call.
+    if (response) {
+        dashSheet.getRange(ui.OUTPUT_AI).setValue(response);
+        dashSheet.getRange(ui.STATUS_AI).setValue("✅ Done");
+        const timestamp = Utilities.formatDate(new Date(), "JST", "yyyy/MM/dd HH:mm:ss");
+        summarySheet.insertRowBefore(2);
+        summarySheet.getRange(2, 1, 1, 2).setValues([[timestamp, response]]);
+        console.log(`[AI] Response saved`);
+    } else {
+        dashSheet.getRange(ui.STATUS_AI).setValue("❌ API Error");
+        console.error(`[AI] API Error or No Response`);
+    }
+}
 
 function Run_OneShot() {
     main_AirQualityUpdate("MANUAL");

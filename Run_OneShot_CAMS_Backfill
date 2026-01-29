@@ -1,0 +1,108 @@
+/**
+ * One-Shot Module: Backfill CAMS Data (2025-12 to Present)
+ * Goal: Re-initialize DB_Hourly_CAMS with new columns (including BLH) and fill historical data.
+ */
+function run_OneShot_CAMS_Backfill() {
+    console.log(`[BACKFILL] Starting CAMS History Fetch...`);
+    const ss = SpreadsheetApp.openById(AIR_CONFIG.SHEET_ID);
+
+    // 1. Re-initialize Sheet (Clear existing or Create new)
+    const sheetName = AIR_CONFIG.SHEETS.CAMS;
+    let sheet = ss.getSheetByName(sheetName);
+    if (sheet) {
+        console.log(`[BACKFILL] Clearing existing sheet...`);
+        sheet.clear();
+    } else {
+        sheet = ss.insertSheet(sheetName);
+    }
+
+    // 2. Set Headers (Ideal Shape with BLH)
+    let headers = ['Time'];
+    const keys = ['pm2_5', 'pm10', 'uv_index', 'dust', 'aerosol_optical_depth', 'ozone', 'nitrogen_dioxide', 'sulphur_dioxide', 'carbon_monoxide', 'ammonia', 'precipitation', 'weather_code', 'wind_gusts_10m', 'cloud_cover', 'surface_pressure', 'pressure_msl', 'temperature_2m', 'relative_humidity_2m', 'freezing_level_height', 'boundary_layer_height'];
+    const headerLabels = ['PM2.5', 'PM10', 'UV', 'Dust', 'AOD', 'O3', 'NO2', 'SO2', 'CO', 'NH3', 'Precip', 'Weather', 'Gust', 'Cloud', 'Press_S', 'Press_M', 'Temp', 'Hum', 'FreezeAlt', 'BLH'];
+
+    AIR_CONFIG.TARGETS.forEach(t => {
+        headers.push(...headerLabels.map(col => `${t.name}_${col}`));
+    });
+    sheet.appendRow(headers);
+    sheet.setFrozenRows(1);
+
+    // 3. Define Range (2025-12-01 to 2026-01-29)
+    const startDate = "2025-12-01";
+    const endDate = "2026-01-29"; // Adjust to today
+
+    // 4. Fetch Data Loop
+    let requests = [];
+
+    // Build requests for all targets
+    AIR_CONFIG.TARGETS.forEach(target => {
+        // Air Quality API (Archive/History supported via standard endpoint with date range)
+        const urlAir = `${AIR_CONFIG.URLS.CAMS_AIR}?latitude=${target.lat}&longitude=${target.lon}&hourly=${AIR_CONFIG.CAMS_PARAMS.AIR}&timezone=Asia%2FTokyo&start_date=${startDate}&end_date=${endDate}`;
+        // Meteo API (Archive for past weather)
+        // NOTE: Standard forecast API handles recent past, but archive is safer for >3 months. 
+        // Since it's Dec 2025 (recent), standard endpoint with past_days or dates usually works.
+        const urlMet = `${AIR_CONFIG.URLS.CAMS_METEO}?latitude=${target.lat}&longitude=${target.lon}&hourly=${AIR_CONFIG.CAMS_PARAMS.METEO}&timezone=Asia%2FTokyo&start_date=${startDate}&end_date=${endDate}`;
+
+        requests.push({ url: urlAir, muteHttpExceptions: true });
+        requests.push({ url: urlMet, muteHttpExceptions: true });
+    });
+
+    console.log(`[BACKFILL] Sending ${requests.length} requests...`);
+    const responses = UrlFetchApp.fetchAll(requests);
+
+    // 5. Process Responses
+    let timeMap = {}; // timeStr -> { targetId: { ...data } }
+
+    AIR_CONFIG.TARGETS.forEach((target, index) => {
+        const resAir = responses[index * 2];
+        const resMet = responses[index * 2 + 1];
+
+        if (resAir.getResponseCode() === 200 && resMet.getResponseCode() === 200) {
+            const dataAir = JSON.parse(resAir.getContentText()).hourly;
+            const dataMet = JSON.parse(resMet.getContentText()).hourly;
+
+            // Merge based on time
+            dataAir.time.forEach((t, i) => {
+                // Convert '2025-12-01T00:00' to '2025/12/01 00:00'
+                const timeStr = t.replace('T', ' ').replace(/-/g, '/');
+                if (!timeMap[timeStr]) timeMap[timeStr] = {};
+                if (!timeMap[timeStr][target.id]) timeMap[timeStr][target.id] = {};
+
+                // Extract Air Data
+                keys.forEach(k => {
+                    if (dataAir[k]) timeMap[timeStr][target.id][k] = dataAir[k][i];
+                });
+                // Extract Met Data (Overwrite/Merge)
+                keys.forEach(k => {
+                    if (dataMet[k]) timeMap[timeStr][target.id][k] = dataMet[k][i];
+                });
+            });
+        } else {
+            console.error(`[BACKFILL] Failed for ${target.name}`);
+        }
+    });
+
+    // 6. Write to Sheet
+    let rows = [];
+    const sortedTimes = Object.keys(timeMap).sort().reverse(); // Newest first
+
+    sortedTimes.forEach(t => {
+        let row = [t];
+        AIR_CONFIG.TARGETS.forEach(target => {
+            const d = timeMap[t][target.id] || {};
+            keys.forEach(k => {
+                row.push(d[k] !== undefined ? d[k] : "null");
+            });
+        });
+        rows.push(row);
+    });
+
+    // Batch write (split by chunk to avoid timeout)
+    const CHUNK = 1000;
+    for (let i = 0; i < rows.length; i += CHUNK) {
+        const chunk = rows.slice(i, i + CHUNK);
+        sheet.getRange(sheet.getLastRow() + 1, 1, chunk.length, chunk[0].length).setValues(chunk);
+    }
+
+    console.log(`[BACKFILL] Completed. ${rows.length} rows inserted.`);
+}
