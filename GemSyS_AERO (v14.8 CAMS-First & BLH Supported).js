@@ -168,7 +168,7 @@ function main_AirQualityUpdate(mode) {
     });
 
     console.log(`[MAIN] Running Archiver...`);
-    run_Monthly_Archiver();
+    RunDailyMaintenance();
 
     const homeEnv = calculateEnvironment_CamsMain(AIR_CONFIG.TARGETS[0], snapshotStations, tMap['HOME'] || {});
     const finalRisk = assessRisk_EU2024_Strict(homeEnv);
@@ -368,7 +368,6 @@ function initAerosSheet(ss) { const s = ss.insertSheet(AIR_CONFIG.SHEETS.AEROS);
 function initDashboard(ss) { const s = ss.insertSheet(AIR_CONFIG.SHEETS.DASH); s.getRange("B5").setValue("Initializing..."); return s; }
 function initAISummarySheet(ss) { const s = ss.insertSheet(AIR_CONFIG.SHEETS.AI_SUMMARY); s.appendRow(['Time', 'AI_Response_Log']); s.setFrozenRows(1); return s; }
 
-// Module: System Maintenance (Fixed)
 // ==========================================
 // Module: System Maintenance (Fixed)
 // ==========================================

@@ -1,0 +1,90 @@
+/**
+ * Module: UI Control (v1.0)
+ * ユーザー操作用のカスタムメニューとダイアログを提供します。
+ */
+
+// スプレッドシートが開かれた時に実行される関数
+function onOpen() {
+    const ui = SpreadsheetApp.getUi();
+    ui.createMenu('GemSyS Controller')
+        .addItem('🔄 即時更新 (OneShot)', 'manual_RunOneShot')
+        .addItem('🤖 AI分析を実行', 'manual_RunAI')
+        .addSeparator()
+        .addItem('📅 期間指定データ取得 (CAMS)', 'ui_PromptRangeFetch')
+        .addSeparator()
+        .addItem('🧹 メンテナンス/アーカイブ実行', 'manual_RunMaintenance')
+        .addToUi();
+}
+
+// ------------------------------------------
+// UIからの呼び出し用ラッパー関数
+// ------------------------------------------
+
+function manual_RunOneShot() {
+    const ui = SpreadsheetApp.getUi();
+    const result = ui.alert('確認', '現在の環境データを取得・更新しますか？', ui.ButtonSet.YES_NO);
+    if (result == ui.Button.YES) {
+        // メインスクリプトの更新関数を呼び出し
+        main_AirQualityUpdate("MANUAL");
+        ui.alert('完了', '更新処理が完了しました。', ui.ButtonSet.OK);
+    }
+}
+
+function manual_RunAI() {
+    run_AI_Analysis();
+}
+
+function manual_RunMaintenance() {
+    RunDailyMaintenance();
+    SpreadsheetApp.getUi().alert('メンテナンス完了', '古いデータのアーカイブとログ整理が完了しました。', SpreadsheetApp.getUi().ButtonSet.OK);
+}
+
+/**
+ * 期間指定取得のためのUIプロンプト
+ */
+function ui_PromptRangeFetch() {
+    const ui = SpreadsheetApp.getUi();
+    
+    // 開始日の入力
+    const startResp = ui.prompt(
+        '期間指定データ取得 (CAMS)',
+        '開始日を「YYYY-MM-DD」形式で入力してください。\n(例: 2025-12-01)',
+        ui.ButtonSet.OK_CANCEL
+    );
+    if (startResp.getSelectedButton() != ui.Button.OK) return;
+    const startDate = startResp.getResponseText().trim();
+
+    // 終了日の入力
+    const endResp = ui.prompt(
+        '期間指定データ取得 (CAMS)',
+        '終了日を「YYYY-MM-DD」形式で入力してください。\n(例: 2026-01-31)',
+        ui.ButtonSet.OK_CANCEL
+    );
+    if (endResp.getSelectedButton() != ui.Button.OK) return;
+    const endDate = endResp.getResponseText().trim();
+
+    // 日付形式の簡易チェック
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+    if (!datePattern.test(startDate) || !datePattern.test(endDate)) {
+        ui.alert('エラー', '日付の形式が正しくありません。「YYYY-MM-DD」で入力してください。', ui.ButtonSet.OK);
+        return;
+    }
+
+    // 確認
+    const confirm = ui.alert(
+        '実行確認', 
+        `以下の期間でデータを取得し、CAMSシートを再構築（または追記）します。\n\n期間: ${startDate} ～ ${endDate}\n\n※注意: データ量が多いと時間がかかります。実行しますか？`,
+        ui.ButtonSet.YES_NO
+    );
+
+    if (confirm == ui.Button.YES) {
+        try {
+            // 下記の期間指定モジュールを呼び出し
+            run_Range_CAMS_Fetch(startDate, endDate);
+            ui.alert('完了', 'データの取得と保存が完了しました。', ui.ButtonSet.OK);
+        } catch (e) {
+            console.error(e);
+            ui.alert('エラー発生', `処理中にエラーが発生しました。\n${e.message}`, ui.ButtonSet.OK);
+        }
+    }
+}
