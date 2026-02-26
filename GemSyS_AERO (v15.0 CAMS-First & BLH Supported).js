@@ -15,7 +15,7 @@ const AIR_CONFIG = {
     DRIVE_FOLDER_ID: '1rXhpclYBQZYjw5RVSC7Qj7Xej04tqoG4',
     TEXT_PLACEHOLDER: "null",
     UI: {
-        CHECK_UPDATE: 'B2', CHECK_AI: 'E8', STATUS_MAIN: 'B5', STATUS_AI: 'B9', OUTPUT_AI: 'B10'
+        CHECK_UPDATE: 'B2', CHECK_AI: 'E8', STATUS_MAIN: 'B5', STATUS_AI: 'B9', OUTPUT_AI: 'B10', STATS_DAILY: 'E5'
     },
     AREA_OFFSET: 0.015,
 
@@ -370,21 +370,52 @@ function writeLogRow_v14(sheetInteg, sheetAeros, sheetCams, timeStr, envHome, tM
     insertAtTop(sheetInteg, rowInteg);
 }
 
-function updateDashboard_v14(s, t, h, rawCams) {
+// [NEW] Logic Result を使ってダッシュボードを更新 (UIレイアウト調整版)
+function updateDashboard_LogicBased(sheet, timeStr, logicResult) {
     const ui = AIR_CONFIG.UI;
-    const risk = assessRisk_EU2024_Strict(h);
+    const aqi = logicResult.aqi_assessment;
+    const risks = logicResult.physical_risks;
+    const data = logicResult.raw_data;
 
-    s.getRange(ui.STATUS_MAIN).setValue(
-        `【GemSyS v14.8】\n${t}\n` +
-        `RISK: [${risk.signal}]\n` +
-        `Reason: ${risk.reason}\n` +
-        `PM2.5: ${h.PM2_5} / Dust: ${h.DUST}\n` +
-        `NO2: ${h.NO2} / NH3: ${h.NH3}\n` +
-        `SO2: ${h.SO2} / CO: ${h.CO}`
-    );
+    // --- 1. 左側 (B5): 現在のリアルタイムステータス ---
+    let bgMain = "#ccffcc"; // Green
+    if (aqi.overall_aqi_level >= 2) bgMain = "#fff4cc"; // Yellow
+    if (aqi.overall_aqi_level >= 3 || logicResult.eu_compliance.eu_limit_exceeded) bgMain = "#ffcccc"; // Red
 
-    const bg = risk.signal === "RED" ? "#ffcccc" : (risk.signal === "YELLOW" ? "#fff4cc" : "#ccffcc");
-    s.getRange(ui.STATUS_MAIN).setBackground(bg);
+    const riskText = logicResult.eu_compliance.eu_limit_exceeded ? "EU LIMIT VIOLATION" : aqi.overall_aqi_status;
+
+    let riskFactors = [];
+    if (risks.stagnation) riskFactors.push("Stagnation");
+    if (risks.sia_conversion) riskFactors.push("SIA Conv.");
+    if (risks.transboundary_aloft) riskFactors.push("Transboundary");
+    const factorStr = riskFactors.length > 0 ? riskFactors.join(", ") : "None";
+
+    sheet.getRange(ui.STATUS_MAIN).setValue(
+        `【GemSyS v15.0 Current】\n${timeStr}\n` +
+        `AQI: [${riskText}]\n` +
+        `Phys-Risk: ${factorStr}\n` +
+        `PM2.5: ${data.pm25.toFixed(1)} / Dust: ${data.dust.toFixed(1)}\n` +
+        `NO2: ${data.no2.toFixed(1)} / O3: ${data.o3.toFixed(1)}\n` +
+        `BLH: ${data.blh}m / Gust: ${data.gust}km/h`
+    ).setBackground(bgMain);
+
+    // --- 2. 右側 (E5): 本日の統計尺度サマリー ---
+    if (ui.STATS_DAILY && typeof DailyReporter !== "undefined") {
+        const metrics = DailyReporter.getTodayMetrics();
+        let statsText = "📊 【本日の統計】\nデータ待機中...";
+        let bgStats = "#e6f2ff"; // デフォルトは薄い青
+
+        if (metrics) {
+            const euStatus = metrics.avgPm25 > 25 ? "⚠️ 超過" : "✅ 適合";
+            if (metrics.avgPm25 > 25) bgStats = "#fce5cd"; // 24h平均超過時はオレンジ背景
+
+            statsText = `📊 【本日の統計 (計${metrics.dataCount}h)】\n` +
+                `24h平均 PM2.5: ${metrics.avgPm25.toFixed(1)} μg/m³ (${euStatus})\n` +
+                `日間最大 PM2.5: ${metrics.maxPm25.toFixed(1)} μg/m³\n` +
+                `大気静穏時間: ${metrics.calmHours} h / ${metrics.dataCount}h`;
+        }
+        sheet.getRange(ui.STATS_DAILY).setValue(statsText).setBackground(bgStats);
+    }
 }
 
 function insertAtTop(sheet, row) { sheet.insertRowBefore(2); sheet.getRange(2, 1, 1, row.length).setValues([row]); }

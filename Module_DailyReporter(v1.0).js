@@ -14,7 +14,7 @@ const DailyReporter = {
         const logSheet = ss.getSheetByName(AIR_CONFIG.SHEETS.INTEGRATED);
         const data = logSheet.getDataRange().getValues();
 
-        // 本日の日付データのみ抽出（Locationが'Home'のものに限定すると精度が上がります）
+        // 本日の日付データのみ抽出（Locationが'Home'のものに限定）
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
@@ -89,6 +89,42 @@ ${euViolation ? "⚠️ 24時間平均がEU法的限界値を超過していま�
         }
 
         return insights;
+    },
+
+    /**
+     * ダッシュボードUI表示用に、本日の統計数値のみを計算して返す
+     */
+    getTodayMetrics: function () {
+        try {
+            const ss = SpreadsheetApp.openById(AIR_CONFIG.SHEET_ID);
+            const logSheet = ss.getSheetByName(AIR_CONFIG.SHEETS.INTEGRATED);
+            if (!logSheet) return null;
+
+            const data = logSheet.getDataRange().getValues();
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+
+            // 本日の Home データのみを抽出
+            const todayRows = data.filter(row => {
+                const rowDate = new Date(row[0]);
+                return rowDate >= today && row[1] === 'Home';
+            });
+
+            if (todayRows.length === 0) return null;
+
+            const pm25Values = todayRows.map(r => parseFloat(r[2])).filter(v => !isNaN(v));
+            const wsValues = todayRows.map(r => parseFloat(r[11])).filter(v => !isNaN(v));
+
+            return {
+                avgPm25: pm25Values.length > 0 ? pm25Values.reduce((a, b) => a + b, 0) / pm25Values.length : 0,
+                maxPm25: pm25Values.length > 0 ? Math.max(...pm25Values) : 0,
+                calmHours: wsValues.filter(v => v < 2.0).length,
+                dataCount: todayRows.length
+            };
+        } catch (e) {
+            console.warn("getTodayMetrics Error:", e);
+            return null;
+        }
     }
 };
 
