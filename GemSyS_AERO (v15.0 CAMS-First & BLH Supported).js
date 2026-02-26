@@ -43,9 +43,9 @@ const AIR_CONFIG = {
     ],
 
     CAMS_PARAMS: {
-        AIR: 'pm2_5,pm10,uv_index,dust,aerosol_optical_depth,ozone,nitrogen_dioxide,sulphur_dioxide,carbon_monoxide,ammonia',
+        AIR: 'pm2_5,pm10,dust,aerosol_optical_depth,ozone,nitrogen_dioxide,sulphur_dioxide,carbon_monoxide,ammonia',
         // ★Added: boundary_layer_height
-        METEO: 'precipitation,weather_code,wind_gusts_10m,cloud_cover,surface_pressure,pressure_msl,temperature_2m,relative_humidity_2m,freezing_level_height,boundary_layer_height'
+        METEO: 'precipitation,weather_code,wind_gusts_10m,cloud_cover,surface_pressure,pressure_msl,temperature_2m,relative_humidity_2m,freezing_level_height,boundary_layer_height,uv_index'
     },
     URLS: {
         CAMS_AIR: 'https://air-quality-api.open-meteo.com/v1/air-quality',
