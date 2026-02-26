@@ -1,5 +1,5 @@
 /**
- * GemSyS_AERO (v14.8 CAMS-First & BLH Supported)
+ * GemSyS_AERO (v15.0 CAMS-First & BLH Supported)
  * * [System Change]
  * - Frequency: Hourly execution enabled (Removed odd-hour skip).
  * - Data Source: CAMS (Open-Meteo) Only. AEROS disabled.
@@ -62,30 +62,6 @@ const AIR_CONFIG = {
     RETENTION: { DAYS: 32, AI_LOG_DAYS: 2, AI_LOG_MAX: 40 }
 };
 
-const AI_SYSTEM_PROMPT_TEMPLATE = `
-# System Instruction: GemSyS Tactical Monitor (CAMS-First)
-あなたは、好中球型喘息患者を守るための環境監視システムです。
-データソースは信頼性の高い広域モデル「OpenMeteo (CAMS)」を主とし、EU指令2024/2881に基づく厳格な判定を行っています。
-
-## 判定基準 (Strict EU 2024)
-- 🔴 DANGER (RED): PM2.5 >= 25.0, NO2 >= 50.0, SO2 >= 50.0
-- 🟡 CAUTION (YELLOW): 2030年目標値超過 (PM2.5 >= 10, NO2 >= 20)
-- 🟢 SAFE (GREEN): 安全圏
-
-## Output Format
-\`\`\`markdown
-### 🛡️ Tactical Report [ {Time} ]
-
-| Item | Value | Unit | Status |
-| :--- | :--- | :--- | :--- |
-| **Risk Level** | **{Risk_Level}** | - | **{Risk_Reason}** |
-| PM2.5 (CAMS) | {Home_PM25} | μg/m³ | Dust: {CAMS_Dust} |
-| NO2 (CAMS) | {Home_NO2} | μg/m³ | NH3: {CAMS_NH3} |
-| SO2 (CAMS) | {Home_SO2} | μg/m³ | CO: {CAMS_CO} |
-| Meteo | {CAMS_Temp}℃ | - | AOD: {CAMS_AOD} |
-\`\`\`
-※実測値(AEROS)ではなく、CAMSモデル値を正として扱ってください。
-`;
 
 // ==========================================
 // 1. Main Logic & UI Handlers
@@ -158,15 +134,76 @@ function main_AirQualityUpdate(mode) {
     let snapshotStations = [];
     // AEROS integration skipped
 
-    // Process ALL targets
+    // Process ALL targets (Logic Engine Integration v1.2)
     AIR_CONFIG.TARGETS.forEach(target => {
-        const env = calculateEnvironment_CamsMain(target, snapshotStations, tMap[target.id] || {});
+        // 1. データ取得 (tMapから該当ターゲットのデータを抜く)
+        const rawData = tMap[target.id] || {};
+
+        // 2. 既存のシート記録処理 (これを残さないとグラフが止まります)
+        const env = calculateEnvironment_CamsMain(target, snapshotStations, rawData);
         writeLogRow_v14(sheetInteg, sheetAeros, sheetCams, timeStr, env, tMap, sMap, snapshotStations, target.name);
         if (target.id === 'HOME') {
-            updateDashboard_v14(sheetDash, timeStr, env, tMap['HOME'] || {});
+            updateDashboard_v14(sheetDash, timeStr, env, rawData);
+        }
+
+        // =================================================================
+        // [NEW] Logic Engine 連携 (ここに追加！)
+        // =================================================================
+        // Logic Engine用のデータオブジェクトを作成
+        const sensorData = {
+            pm25: rawData.pm2_5 || 0,
+            pm10: rawData.pm10 || 0,
+            no2: rawData.nitrogen_dioxide || 0,
+            so2: rawData.sulphur_dioxide || 0,
+            o3: rawData.ozone || 0,
+            dust: rawData.dust || 0,
+            aod: rawData.aerosol_optical_depth || 0,
+            temp: rawData.temperature_2m || 0,
+            hum: rawData.relative_humidity_2m || 0,
+            precip: rawData.precipitation || 0,
+            gust: rawData.wind_gusts_10m || 0,
+            blh: rawData.boundary_layer_height || 1000,
+            uv: rawData.uv_index || 0
+        };
+
+        // 計算エンジン実行
+        let logicResult;
+        try {
+            logicResult = GemSyS_Logic.analyze(sensorData, target.name);
+            console.log(`[Logic] ${target.name}: Level ${logicResult.aqi_assessment.overall_aqi_level}`);
+        } catch (e) {
+            console.error(`[Logic] Error at ${target.name}: ${e.message}`);
+            return;
+        }
+
+        // HOMEの場合のみ、AI分析判定を行う
+        if (target.id === 'HOME') {
+            const isRisk = logicResult.aqi_assessment.sensitive_group_alert_active || logicResult.eu_compliance.eu_limit_exceeded;
+
+            // 「手動実行モード」または「リスクあり」の場合にAIを起動
+            if (mode === "MANUAL" || isRisk) {
+                console.log(`[AI] Triggering Logic-based Analysis...`);
+                const systemInst = PromptBuilder.getSystemInstruction();
+                const userContext = PromptBuilder.buildContext(logicResult);
+
+                try {
+                    // 新しいAI呼び出し (PromptBuilder経由)
+                    const aiResponse = GEMINI_GenerateContent(userContext, systemInst, AIR_CONFIG.AI_MODEL);
+                    if (aiResponse) {
+                        // 結果をダッシュボードとログに保存
+                        sheetDash.getRange(ui.OUTPUT_AI).setValue(aiResponse);
+                        sheetDash.getRange(ui.STATUS_AI).setValue("✅ Done (Logic v1.2)");
+
+                        const sumSheet = ss.getSheetByName(AIR_CONFIG.SHEETS.AI_SUMMARY) || initAISummarySheet(ss);
+                        sumSheet.insertRowBefore(2);
+                        sumSheet.getRange(2, 1, 1, 2).setValues([[new Date(), aiResponse]]);
+                    }
+                } catch (e) {
+                    console.error("[AI] Generation Error", e);
+                }
+            }
         }
     });
-
     console.log(`[MAIN] Running Archiver...`);
     RunDailyMaintenance();
 
@@ -174,7 +211,8 @@ function main_AirQualityUpdate(mode) {
     const finalRisk = assessRisk_EU2024_Strict(homeEnv);
     sheetDash.getRange(ui.STATUS_MAIN).setValue(`✅ Updated\n[${finalRisk.signal}] ${finalRisk.reason}`);
 
-    if (mode === "MANUAL") run_AI_Analysis();
+    // Logic Engine側で実行するため廃止
+    // if (mode === "MANUAL") run_AI_Analysis();
 
     try {
         if (typeof makeDailySummary_v14 === 'function') {
