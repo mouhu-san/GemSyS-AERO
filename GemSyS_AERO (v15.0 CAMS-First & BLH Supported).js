@@ -142,9 +142,6 @@ function main_AirQualityUpdate(mode) {
         // 2. 既存のシート記録処理 (これを残さないとグラフが止まります)
         const env = calculateEnvironment_CamsMain(target, snapshotStations, rawData);
         writeLogRow_v14(sheetInteg, sheetAeros, sheetCams, timeStr, env, tMap, sMap, snapshotStations, target.name);
-        if (target.id === 'HOME') {
-            updateDashboard_v14(sheetDash, timeStr, env, rawData);
-        }
 
         // =================================================================
         // [NEW] Logic Engine 連携 (ここに追加！)
